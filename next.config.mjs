@@ -30,4 +30,8 @@ const sentryConfig = withSentryConfig(
     },
 );
 
-export default MillionLint.next({ rsc: true })(sentryConfig);
+const config = process.env.DEBUG_MILLION
+    ? MillionLint.next({ rsc: true })(sentryConfig)
+    : sentryConfig;
+
+export default config;
