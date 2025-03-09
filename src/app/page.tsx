@@ -1,7 +1,10 @@
-import { FeaturesSection } from './components/features';
-import { Footer } from './components/footer';
-import { Header } from './components/header';
-import { Hero } from './components/hero';
+'use client';
+import { Footer } from '@/components/footer';
+import { Header } from '@/components/header';
+import { FeaturesSection } from '@/features/landing/features';
+import { Hero } from '@/features/landing/hero';
+import { StepsSection } from '@/features/landing/steps';
+import { motion } from 'framer-motion';
 
 export default function Home() {
     return (
@@ -9,26 +12,41 @@ export default function Home() {
             <Header />
             <Hero />
 
-            <div
+            {/* Animated gradient background element */}
+            <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 1.5, delay: 0.5 }}
                 className="pointer-events-none fixed inset-0"
                 style={{
                     background: 'radial-gradient(circle at top, rgba(255,255,255,0.1), transparent 50%)',
                 }}
             />
 
-            <div className="relative z-10 my-25 h-px w-full">
+            {/* Animated divider */}
+            <motion.div
+                initial={{ opacity: 0, scaleX: 0 }}
+                whileInView={{ opacity: 1, scaleX: 1 }}
+                viewport={{ once: true }}
+                transition={{ duration: 1 }}
+                className="relative z-10 my-25 h-px w-full"
+            >
                 <div className="absolute inset-x-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
-            </div>
-
-            <section className="relative z-10 flex flex-col items-center py-10 text-center">
-                <p className="mb-2 text-xs font-semibold tracking-widest text-neutral-500 uppercase">
-                    IMMERSIVE FOCUS ENVIRONMENT
-                </p>
-                <h2 className="mb-2 text-3xl font-bold text-white md:text-4xl">Let the beats guide your flow.</h2>
-                <p className="font-serif text-4xl text-neutral-400 md:text-5xl">Curated sounds for every mood.</p>
-            </section>
+            </motion.div>
 
             <FeaturesSection />
+
+            <motion.div
+                initial={{ opacity: 0 }}
+                whileInView={{ opacity: 1 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.8 }}
+                className="relative z-10 my-16 flex justify-center"
+            >
+                <div className="h-12 w-[1px] bg-gradient-to-b from-transparent via-white/20 to-transparent" />
+            </motion.div>
+
+            <StepsSection />
 
             <Footer />
         </div>

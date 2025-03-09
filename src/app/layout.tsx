@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { Cormorant, Inter } from 'next/font/google';
-import { Providers } from './components/providers';
+import { Providers } from '../components/providers';
 
 import { ClerkProvider } from '@clerk/nextjs';
 
