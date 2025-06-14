@@ -62,14 +62,6 @@ export const Feature = ({ title, description, icon, index, color, isInView }: Fe
             </motion.div>
 
             <div className="relative">
-                <motion.div
-                    initial={{ width: 0 }}
-                    animate={isInView ? { width: '3rem' } : { width: 0 }}
-                    transition={{ delay: 0.3 + 0.05 * index, duration: 0.4 }}
-                    className={cn('absolute top-1/2 -left-2 h-px -translate-y-1/2', colorClasses.accentLine)}
-                    aria-hidden="true"
-                />
-
                 <h3 className="text-base leading-7 font-semibold tracking-tight text-neutral-900 dark:text-white">
                     <motion.span
                         whileHover={{ x: 4 }}

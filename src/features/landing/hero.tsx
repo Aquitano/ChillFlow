@@ -20,14 +20,13 @@ export function Hero() {
                     >
                         <h1 className="mb-2 text-4xl font-medium md:text-5xl">
                             Flow into{' '}
-                            <span className="bg-gradient-to-r from-stone-400 to-stone-500 bg-clip-text font-serif text-5xl text-transparent italic md:text-6xl">
+                            <span className="bg-gradient-to-r from-stone-400 to-stone-500 bg-clip-text p-1 font-serif text-5xl text-transparent italic md:text-6xl">
                                 productivity
                             </span>
                         </h1>
                         <p className="mb-10 text-lg text-neutral-400">Relaxing beats to keep you calm and focused.</p>
                     </motion.div>
 
-                    {/* Dynamic user-specific content */}
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
