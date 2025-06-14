@@ -5,15 +5,15 @@ export function Footer() {
     const links = [
         {
             title: 'Product',
-            items: ['Features', 'Pricing', 'Download App', 'Changelog'],
+            items: ['Features', 'Pricing', 'Changelog'],
         },
         {
             title: 'Resources',
-            items: ['Community', 'Sound Library', 'Focus Guide', 'Blog'],
+            items: ['Sound Library', 'Focus Guide', 'Blog'],
         },
         {
-            title: 'Company',
-            items: ['About', 'Careers', 'Legal', 'Contact'],
+            title: 'Support',
+            items: ['About', 'Legal', 'Contact'],
         },
     ];
 
