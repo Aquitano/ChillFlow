@@ -349,7 +349,7 @@ export const useAppStore = create<AppState>()(
             advancePomodoroPhase: () => {
                 const { pomodoroSettings } = get();
                 let nextSession = pomodoroSettings.currentSession;
-                let isBreak = !pomodoroSettings.isBreak;
+                const isBreak = !pomodoroSettings.isBreak;
 
                 if (!isBreak) {
                     nextSession = pomodoroSettings.isBreak ? nextSession + 1 : nextSession;
