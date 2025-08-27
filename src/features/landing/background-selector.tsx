@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import Image from 'next/image';
 
 interface BackgroundOption {
     id: string;
@@ -55,8 +56,10 @@ const BackgroundTile = ({ option, onClick }: BackgroundTileProps) => {
             />
 
             {image ? (
-                <img
+                <Image
                     src={image}
+                    width={640}
+                    height={144}
                     className={cn(
                         'h-36 w-full object-cover transition-transform',
                         'group-hover:scale-105',

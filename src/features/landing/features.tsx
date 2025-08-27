@@ -10,7 +10,7 @@ import {
     IconRouteAltLeft,
     IconTerminal2,
 } from '@tabler/icons-react';
-import { motion, useInView } from 'framer-motion';
+import { cubicBezier, motion, useInView, type Variants } from 'framer-motion';
 import { useRef } from 'react';
 import { Feature } from './feature';
 
@@ -69,20 +69,20 @@ export function FeaturesSection() {
     const ref = useRef(null);
     const isInView = useInView(ref, { once: true, margin: '-100px' });
 
-    const sectionVariants = {
+    const sectionVariants: Variants = {
         hidden: { opacity: 0, y: 30 },
         visible: {
             opacity: 1,
             y: 0,
             transition: {
                 duration: 0.8,
-                ease: [0.22, 1, 0.36, 1],
+                ease: cubicBezier(0.22, 1, 0.36, 1),
                 staggerChildren: 0.2,
             },
         },
     };
 
-    const titleVariants = {
+    const titleVariants: Variants = {
         hidden: { opacity: 0, y: 20 },
         visible: (delay: number) => ({
             opacity: 1,
@@ -90,12 +90,12 @@ export function FeaturesSection() {
             transition: {
                 delay,
                 duration: 0.7,
-                ease: [0.22, 1, 0.36, 1],
+                ease: cubicBezier(0.22, 1, 0.36, 1),
             },
         }),
     };
 
-    const containerVariants = {
+    const containerVariants: Variants = {
         hidden: { opacity: 0 },
         visible: {
             opacity: 1,
