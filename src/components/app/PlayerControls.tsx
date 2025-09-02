@@ -2,16 +2,16 @@
 
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
-import { useAudioEngine } from '@/lib/audio/useAudioEngine';
+import { useAudioEngineState } from '@/lib/audio/useAudioEngine';
 import { useAppStore } from '@/store/app-store';
 import { motion } from 'framer-motion';
 import { Heart, Music, Pause, Play, Repeat, SkipBack, SkipForward, ThumbsDown, Volume2 } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
 
 export const PlayerControls: React.FC = () => {
-    const engine = useAudioEngine();
+    const { engine, state: audio } = useAudioEngineState();
 
-    const isPlaying = useAppStore((state) => state.isPlaying);
+    const isPlayingStore = useAppStore((state) => state.isPlaying);
     const volume = useAppStore((state) => state.volume);
     const togglePlay = useAppStore((state) => state.togglePlay);
     const setVolume = useAppStore((state) => state.setVolume);
@@ -28,6 +28,15 @@ export const PlayerControls: React.FC = () => {
         [currentMode, modes],
     );
 
+    // Initialize UI volume from engine's persisted volume
+    useEffect(() => {
+        const persisted = Math.round((engine.getMasterVolume?.() ?? 0.5) * 100);
+        if ((volume?.[0] ?? 50) !== persisted) {
+            setVolume([persisted]);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [engine]);
+
     // Sync master volume to engine
     useEffect(() => {
         const v = (volume?.[0] ?? 50) / 100;
@@ -38,6 +47,14 @@ export const PlayerControls: React.FC = () => {
             // console.error('Volume set failed', err);
         }
     }, [engine, volume]);
+
+    // Keep store's isPlaying in sync with engine state
+    useEffect(() => {
+        if (isPlayingStore !== audio.isPlaying) {
+            togglePlay();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [audio.isPlaying]);
 
     // Load track into engine when currentTrack changes
     useEffect(() => {
@@ -52,9 +69,8 @@ export const PlayerControls: React.FC = () => {
 
     const handleTogglePlay = async () => {
         try {
-            if (isPlaying) {
+            if (audio.isPlaying) {
                 engine.pause();
-                togglePlay();
                 return;
             }
 
@@ -63,7 +79,6 @@ export const PlayerControls: React.FC = () => {
             }
 
             await engine.play();
-            togglePlay();
         } catch (err) {
             // Optionally show toast/notification
             // console.error('Playback failed', err);
@@ -99,7 +114,7 @@ export const PlayerControls: React.FC = () => {
                 </Button>
 
                 <Button onClick={handleTogglePlay} className="h-10 w-10 rounded-full bg-white/20 hover:bg-white/30">
-                    {isPlaying ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
+                    {audio.isPlaying ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
                 </Button>
 
                 <Button variant="ghost" size="icon" className="rounded-full hover:bg-white/10">
@@ -119,7 +134,9 @@ export const PlayerControls: React.FC = () => {
                 </div>
 
                 <div className="flex items-center space-x-2">
-                    <Volume2 size={16} className="text-stone-400" />
+                    <button onClick={() => (audio.muted ? engine.unmute() : engine.mute())} title={audio.muted ? 'Unmute' : 'Mute'}>
+                        <Volume2 size={16} className="text-stone-400" />
+                    </button>
                     <div className="w-24">
                         <Slider
                             value={volume}
