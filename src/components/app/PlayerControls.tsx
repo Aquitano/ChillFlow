@@ -2,12 +2,15 @@
 
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
+import { useAudioEngine } from '@/lib/audio/useAudioEngine';
 import { useAppStore } from '@/store/app-store';
 import { motion } from 'framer-motion';
 import { Heart, Music, Pause, Play, Repeat, SkipBack, SkipForward, ThumbsDown, Volume2 } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 
 export const PlayerControls: React.FC = () => {
+    const engine = useAudioEngine();
+
     const isPlaying = useAppStore((state) => state.isPlaying);
     const volume = useAppStore((state) => state.volume);
     const togglePlay = useAppStore((state) => state.togglePlay);
@@ -24,6 +27,48 @@ export const PlayerControls: React.FC = () => {
         }),
         [currentMode, modes],
     );
+
+    // Sync master volume to engine
+    useEffect(() => {
+        const v = (volume?.[0] ?? 50) / 100;
+        try {
+            engine.setMasterVolume(v);
+        } catch (err) {
+            // Optionally report error
+            // console.error('Volume set failed', err);
+        }
+    }, [engine, volume]);
+
+    // Load track into engine when currentTrack changes
+    useEffect(() => {
+        const url = currentTrack?.audioUrl;
+        if (!url) return;
+        engine.loadMainTrack(url).catch((err) => {
+            // Optionally report error to monitoring
+            // console.error('Audio load failed', err);
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [currentTrack?.audioUrl]);
+
+    const handleTogglePlay = async () => {
+        try {
+            if (isPlaying) {
+                engine.pause();
+                togglePlay();
+                return;
+            }
+
+            if (!engine.hasMainTrack() && currentTrack?.audioUrl) {
+                await engine.loadMainTrack(currentTrack.audioUrl);
+            }
+
+            await engine.play();
+            togglePlay();
+        } catch (err) {
+            // Optionally show toast/notification
+            // console.error('Playback failed', err);
+        }
+    };
 
     return (
         <motion.div
@@ -53,7 +98,7 @@ export const PlayerControls: React.FC = () => {
                     <SkipBack size={18} />
                 </Button>
 
-                <Button onClick={togglePlay} className="h-10 w-10 rounded-full bg-white/20 hover:bg-white/30">
+                <Button onClick={handleTogglePlay} className="h-10 w-10 rounded-full bg-white/20 hover:bg-white/30">
                     {isPlaying ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
                 </Button>
 

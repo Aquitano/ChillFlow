@@ -4,6 +4,14 @@ import { withSentryConfig } from '@sentry/nextjs';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
     reactStrictMode: true,
+    images: {
+        remotePatterns: [
+            {
+                protocol: 'https',
+                hostname: 'images.unsplash.com',
+            },
+        ],
+    },
 };
 
 const sentryConfig = withSentryConfig(
@@ -30,8 +38,6 @@ const sentryConfig = withSentryConfig(
     },
 );
 
-const config = process.env.DEBUG_MILLION
-    ? MillionLint.next({ rsc: true })(sentryConfig)
-    : sentryConfig;
+const config = process.env.DEBUG_MILLION ? MillionLint.next({ rsc: true })(sentryConfig) : sentryConfig;
 
 export default config;
