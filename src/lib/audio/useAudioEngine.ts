@@ -1,15 +1,19 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { getAudioDebugLogger } from './debug';
 import { getAudioEngine } from './engine';
 
 export function useAudioEngine() {
     const engine = useMemo(() => getAudioEngine(), []);
+    const debugLogger = useMemo(() => getAudioDebugLogger(), []);
 
     useEffect(() => {
-        engine.init().catch(() => { });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+        debugLogger.debug('Hook', 'useAudioEngine initializing');
+        engine.init().catch((err) => {
+            debugLogger.error('Hook', 'Failed to initialize audio engine in hook', err);
+        });
+    }, [engine, debugLogger]);
 
     return engine;
 }
@@ -26,6 +30,7 @@ export type AudioState = {
 
 export function useAudioEngineState() {
     const engine = useAudioEngine();
+    const debugLogger = useMemo(() => getAudioDebugLogger(), []);
     const [state, setState] = useState<AudioState>(() => ({
         isPlaying: false,
         currentTime: 0,
@@ -52,7 +57,8 @@ export function useAudioEngineState() {
         const handleVolume = (e: CustomEvent<{ volume: number; muted: boolean }>) => {
             setState((s) => ({ ...s, volume: e.detail.volume, muted: e.detail.muted }));
         };
-        const handleError = () => {
+        const handleError = (e: CustomEvent<{ message: string }>) => {
+            debugLogger.warn('Hook', 'Audio error received in state hook', e.detail);
             // keep state but could surface error via toast elsewhere
         };
 
@@ -77,7 +83,7 @@ export function useAudioEngineState() {
             engine.removeEventListener('volumechange', handleVolume);
             engine.removeEventListener('error', handleError);
         };
-    }, [engine]);
+    }, [engine, debugLogger]);
 
     return { engine, state };
 }

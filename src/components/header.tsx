@@ -80,7 +80,7 @@ export function Header() {
                         </SignedOut>
                         <SignedIn>
                             <div className="flex items-center gap-2 sm:gap-4">
-                                <Link href="/dashboard">
+                                <Link href="/app">
                                     <Button
                                         variant="ghost"
                                         size="sm"

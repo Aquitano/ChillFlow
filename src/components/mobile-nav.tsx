@@ -78,7 +78,7 @@ export function MobileNav() {
                             </Link>
                             <SignedIn>
                                 <Link
-                                    href="/dashboard"
+                                    href="/app"
                                     className="flex w-full rounded-md px-3 py-3 text-base font-medium text-blue-400 transition-colors hover:bg-blue-900/20"
                                     onClick={() => setOpen(false)}
                                 >

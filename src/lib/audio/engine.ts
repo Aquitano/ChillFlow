@@ -1,5 +1,7 @@
 'use client';
 
+import { getAudioDebugLogger } from './debug';
+
 export type AudioVariant = { codec: 'webm' | 'm4a'; bitrateKbps: number; url: string };
 export type AudioTrack = { id: string; title: string; variants?: AudioVariant[]; url?: string };
 
@@ -27,24 +29,70 @@ class AudioEngineImpl {
     private muted = false;
     private loadToken = 0;
 
-    private ensureContext(): void {
-        if (this.audioContext) return;
-        const w = window as Window & { webkitAudioContext?: typeof AudioContext };
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const Ctor = (window as any).AudioContext ?? w.webkitAudioContext;
-        if (!Ctor) throw new Error('Web Audio API not supported');
-        this.audioContext = new Ctor({ latencyHint: 'interactive' });
+    // Debug (dev-only no-op in production)
+    private debugLogger = getAudioDebugLogger();
 
-        try {
-            const saved = localStorage.getItem('audio.masterVolume');
-            if (saved != null) this.volumeNormalized = Math.max(0, Math.min(1, Number(saved)));
-        } catch {
-            /* ignore */
+    private ensureContext(): void {
+        if (this.audioContext) {
+            this.debugLogger.debug('AudioContext', 'Context already exists, skipping creation');
+            return;
         }
 
-        this.masterGainNode = this.audioContext!.createGain();
-        this.masterGainNode.gain.value = this.perceptual(this.volumeNormalized);
-        this.masterGainNode.connect(this.audioContext!.destination);
+        const endTimer = this.debugLogger.time('AudioContext', 'Context initialization');
+
+        try {
+            const w = window as Window & { webkitAudioContext?: typeof AudioContext };
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const Ctor = (window as any).AudioContext ?? w.webkitAudioContext;
+
+            if (!Ctor) {
+                this.debugLogger.error('AudioContext', 'Web Audio API not supported');
+                throw new Error('Web Audio API not supported');
+            }
+
+            this.audioContext = new Ctor({ latencyHint: 'interactive' });
+            this.debugLogger.info('AudioContext', 'Created audio context', {
+                sampleRate: this.audioContext?.sampleRate,
+                state: this.audioContext?.state,
+                baseLatency: this.audioContext?.baseLatency,
+                outputLatency: this.audioContext?.outputLatency,
+            });
+
+            // Load persisted volume
+            try {
+                const saved = localStorage.getItem('audio.masterVolume');
+                if (saved != null) {
+                    const parsed = Math.max(0, Math.min(1, Number(saved)));
+                    this.volumeNormalized = parsed;
+                    this.debugLogger.debug('Volume', 'Restored volume from localStorage', {
+                        saved,
+                        normalized: this.volumeNormalized
+                    });
+                }
+            } catch (err) {
+                this.debugLogger.warn('Volume', 'Failed to restore volume from localStorage', err);
+            }
+
+            // Create gain node
+            this.masterGainNode = this.audioContext?.createGain() ?? null;
+            if (this.masterGainNode && this.audioContext) {
+                const gainValue = this.perceptual(this.volumeNormalized);
+                this.masterGainNode.gain.value = gainValue;
+                this.masterGainNode.connect(this.audioContext.destination);
+            }
+
+            this.debugLogger.info('AudioGraph', 'Connected master gain node', {
+                volumeNormalized: this.volumeNormalized,
+                gainValue: this.masterGainNode ? this.perceptual(this.volumeNormalized) : 0,
+                muted: this.muted,
+            });
+
+        } catch (err) {
+            this.debugLogger.error('AudioContext', 'Failed to initialize context', err);
+            throw err;
+        } finally {
+            endTimer();
+        }
     }
 
     /**
@@ -54,6 +102,91 @@ class AudioEngineImpl {
     private perceptual(v01: number): number {
         const v = Math.max(0, Math.min(1, v01));
         return v * v;
+    }
+
+    /**
+     * Create and configure the HTMLAudioElement once, with persistent listeners.
+     */
+    private ensureMediaElement(): HTMLAudioElement {
+        if (this.mediaElement) return this.mediaElement;
+
+        const el = new Audio();
+        el.crossOrigin = 'anonymous';
+        el.preload = 'auto';
+        el.loop = false;
+        // @ts-expect-error playsInline may be missing in lib dom types
+        el.playsInline = true;
+
+        el.addEventListener('timeupdate', () => this.dispatchTime());
+        el.addEventListener('ended', () => {
+            this.isPlaying = false;
+            this.dispatch('statechange', { isPlaying: this.isPlaying });
+            this.dispatch('ended', {});
+        });
+        el.addEventListener('play', () => {
+            this.isPlaying = true;
+            this.dispatch('statechange', { isPlaying: this.isPlaying });
+        });
+        el.addEventListener('pause', () => {
+            this.isPlaying = false;
+            this.dispatch('statechange', { isPlaying: this.isPlaying });
+        });
+        el.addEventListener('error', () => {
+            const err = el.error ?? null;
+            this.dispatch('error', { message: this.mediaErrorMessage(err as MediaError | null) });
+        });
+        el.addEventListener('loadedmetadata', () => this.dispatchTime());
+
+        this.mediaElement = el;
+        return el;
+    }
+
+    /**
+     * Connect media element to gain node if needed.
+     */
+    private connectGraphIfNeeded(): void {
+        if (!this.audioContext || !this.masterGainNode || !this.mediaElement) return;
+        if (this.mediaSourceNode) return;
+        this.mediaSourceNode = this.audioContext.createMediaElementSource(this.mediaElement);
+        this.mediaSourceNode.connect(this.masterGainNode);
+    }
+
+    /**
+     * Await until media element is ready to play or errors.
+     */
+    private waitUntilReady(loadToken: number): Promise<void> {
+        return new Promise((resolve, reject) => {
+            if (!this.mediaElement) return reject(new Error('Media element not initialized'));
+            const onCanPlay = () => {
+                if (loadToken !== this.loadToken) return;
+                cleanup();
+                resolve();
+            };
+            const onLoadedData = () => {
+                if (loadToken !== this.loadToken) return;
+                const el = this.mediaElement!;
+                if (el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+                    cleanup();
+                    resolve();
+                }
+            };
+            const onErr = () => {
+                if (loadToken !== this.loadToken) return;
+                const err = this.mediaElement?.error ?? null;
+                cleanup();
+                reject(new Error(this.mediaErrorMessage(err as MediaError | null)));
+            };
+            const cleanup = () => {
+                this.mediaElement?.removeEventListener('canplay', onCanPlay);
+                this.mediaElement?.removeEventListener('loadeddata', onLoadedData);
+                this.mediaElement?.removeEventListener('error', onErr);
+            };
+            this.mediaElement.addEventListener('canplay', onCanPlay);
+            this.mediaElement.addEventListener('loadeddata', onLoadedData);
+            this.mediaElement.addEventListener('error', onErr);
+            // In case already buffered
+            setTimeout(onLoadedData, 0);
+        });
     }
 
     /**
@@ -82,156 +215,253 @@ class AudioEngineImpl {
     }
 
     async init(): Promise<void> {
-        this.ensureContext();
+        this.debugLogger.debug('Engine', 'Initializing audio engine');
+        const endTimer = this.debugLogger.time('Engine', 'Engine initialization');
+
+        try {
+            this.ensureContext();
+            this.debugLogger.debug('Engine', 'Audio engine initialized successfully');
+        } catch (err) {
+            this.debugLogger.error('Engine', 'Failed to initialize audio engine', err);
+            throw err;
+        } finally {
+            endTimer();
+        }
     }
 
     hasMainTrack(): boolean {
         return Boolean(this.mediaElement?.src);
     }
 
-    // Choose best variant by simple preference: webm first if supported, else m4a
     private pickVariant(track: AudioTrack): string | null {
-        if (track.url) return track.url;
+        this.debugLogger.debug('TrackSelection', 'Selecting best variant for track', {
+            trackId: track.id,
+            title: track.title,
+            hasDirectUrl: !!track.url,
+            variantCount: track.variants?.length ?? 0,
+        });
+
+        if (track.url) {
+            this.debugLogger.debug('TrackSelection', 'Using direct URL', { url: track.url });
+            return track.url;
+        }
+
         const variants = track.variants ?? [];
+        if (variants.length === 0) {
+            this.debugLogger.warn('TrackSelection', 'No variants available');
+            return null;
+        }
+
         const probe = document.createElement('audio');
         const webm = variants.find((v) => v.codec === 'webm');
         const m4a = variants.find((v) => v.codec === 'm4a');
-        if (webm && probe.canPlayType('audio/webm')) return webm.url;
-        if (m4a && (probe.canPlayType('audio/mp4') || probe.canPlayType('audio/aac'))) return m4a.url;
-        return variants[0]?.url ?? null;
+
+        const webmSupport = webm ? probe.canPlayType('audio/webm') : '';
+        const mp4Support = m4a ? (probe.canPlayType('audio/mp4') || probe.canPlayType('audio/aac')) : '';
+
+        this.debugLogger.debug('TrackSelection', 'Codec support check', {
+            webmSupport,
+            mp4Support,
+            variants: variants.map(v => ({ codec: v.codec, bitrate: v.bitrateKbps })),
+        });
+
+        if (webm && webmSupport) {
+            this.debugLogger.info('TrackSelection', 'Selected WebM variant', {
+                codec: webm.codec,
+                bitrate: webm.bitrateKbps,
+                url: webm.url,
+            });
+            return webm.url;
+        }
+
+        if (m4a && mp4Support) {
+            this.debugLogger.info('TrackSelection', 'Selected M4A variant', {
+                codec: m4a.codec,
+                bitrate: m4a.bitrateKbps,
+                url: m4a.url,
+            });
+            return m4a.url;
+        }
+
+        // Fallback to first variant
+        const fallback = variants[0];
+        if (fallback) {
+            this.debugLogger.warn('TrackSelection', 'Using fallback variant (may not be supported)', {
+                codec: fallback.codec,
+                bitrate: fallback.bitrateKbps,
+                url: fallback.url,
+            });
+            return fallback.url;
+        }
+
+        this.debugLogger.error('TrackSelection', 'No playable variant found');
+        return null;
     }
 
     async loadMainTrackFromTrack(track: AudioTrack): Promise<void> {
+        this.debugLogger.info('TrackLoader', 'Loading track from AudioTrack object', {
+            trackId: track.id,
+            title: track.title,
+        });
+
         const url = this.pickVariant(track);
-        if (!url) throw new Error('No playable variant for track');
+        if (!url) {
+            const error = new Error('No playable variant for track');
+            this.debugLogger.error('TrackLoader', 'Failed to find playable variant', { track });
+            throw error;
+        }
+
         await this.loadMainTrack(url);
     }
 
     async loadMainTrack(url: string): Promise<void> {
+        this.debugLogger.debug('TrackLoader', 'Loading main track', {
+            url: url.substring(url.lastIndexOf('/') + 1), // Log filename only for privacy
+            fullUrl: url,
+        });
+
+        const endTimer = this.debugLogger.time('TrackLoader', 'Track loading');
         this.ensureContext();
         const myToken = ++this.loadToken;
 
-        if (!this.mediaElement) {
-            this.mediaElement = new Audio();
-            this.mediaElement.crossOrigin = 'anonymous';
-            this.mediaElement.preload = 'auto';
-            this.mediaElement.loop = false;
-            // @ts-expect-error - playsInline may be missing in lib dom types
-            this.mediaElement.playsInline = true;
+        this.debugLogger.debug('TrackLoader', 'Load token assigned', { token: myToken });
 
-            // Attach persistent listeners once
-            this.mediaElement.addEventListener('timeupdate', () => {
-                this.dispatchTime();
-            });
-            this.mediaElement.addEventListener('ended', () => {
-                this.isPlaying = false;
-                this.dispatch('statechange', { isPlaying: this.isPlaying });
-                this.dispatch('ended', {});
-            });
-            this.mediaElement.addEventListener('play', () => {
-                this.isPlaying = true;
-                this.dispatch('statechange', { isPlaying: this.isPlaying });
-            });
-            this.mediaElement.addEventListener('pause', () => {
-                this.isPlaying = false;
-                this.dispatch('statechange', { isPlaying: this.isPlaying });
-            });
-            this.mediaElement.addEventListener('error', () => {
-                const err = this.mediaElement?.error ?? null;
-                this.dispatch('error', { message: this.mediaErrorMessage(err as MediaError | null) });
-            });
-            this.mediaElement.addEventListener('loadedmetadata', () => {
-                this.dispatchTime();
-            });
+        try {
+            if (!this.mediaElement) this.ensureMediaElement();
+
+            this.debugLogger.debug('MediaElement', 'Setting source and loading', { url });
+            const el = this.mediaElement!;
+            el.src = url;
+            el.load();
+
+            this.connectGraphIfNeeded();
+
+            await this.waitUntilReady(myToken);
+
+            this.debugLogger.debug('TrackLoader', 'Track loaded successfully');
+            this.debugLogger.logMediaElementState(this.mediaElement);
+
+        } catch (err) {
+            this.debugLogger.error('TrackLoader', 'Failed to load track', { error: err, url });
+            throw err;
+        } finally {
+            endTimer();
         }
-
-        this.mediaElement.src = url;
-        this.mediaElement.load();
-
-        if (!this.mediaSourceNode) {
-            if (!this.audioContext || !this.masterGainNode || !this.mediaElement) return;
-            this.mediaSourceNode = this.audioContext.createMediaElementSource(this.mediaElement);
-            this.mediaSourceNode.connect(this.masterGainNode);
-        }
-
-        await new Promise<void>((resolve, reject) => {
-            if (!this.mediaElement) return reject(new Error('Media element not initialized'));
-            const checkReady = () => {
-                if (myToken !== this.loadToken) return; // superseded by a newer load
-                const el = this.mediaElement!;
-                if (el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
-                    cleanup();
-                    resolve();
-                }
-            };
-            const onCanPlay = () => {
-                if (myToken !== this.loadToken) return;
-                cleanup();
-                resolve();
-            };
-            const onErr = () => {
-                if (myToken !== this.loadToken) return;
-                const err = this.mediaElement?.error ?? null;
-                cleanup();
-                reject(new Error(this.mediaErrorMessage(err as MediaError | null)));
-            };
-            const cleanup = () => {
-                this.mediaElement?.removeEventListener('canplay', onCanPlay);
-                this.mediaElement?.removeEventListener('loadeddata', checkReady);
-                this.mediaElement?.removeEventListener('error', onErr);
-            };
-            this.mediaElement.addEventListener('canplay', onCanPlay);
-            this.mediaElement.addEventListener('loadeddata', checkReady);
-            this.mediaElement.addEventListener('error', onErr);
-            // In case it's already buffered
-            setTimeout(checkReady, 0);
-        });
     }
 
     async play(): Promise<void> {
-        this.ensureContext();
-        if (!this.mediaElement) throw new Error('No main track loaded');
-        if (this.audioContext?.state === 'suspended') {
-            try {
-                await this.audioContext.resume();
-            } catch {
-                // Ignore; browser may require a gesture and will surface on play()
-            }
-        }
+        this.debugLogger.debug('Playback', 'Play requested');
+        const endTimer = this.debugLogger.time('Playback', 'Play operation');
+
         try {
+            this.ensureContext();
+
+            if (!this.mediaElement) {
+                this.debugLogger.error('Playback', 'No main track loaded');
+                throw new Error('No main track loaded');
+            }
+
+            this.debugLogger.logAudioContextState(this.audioContext);
+            this.debugLogger.logMediaElementState(this.mediaElement);
+
+            if (this.audioContext?.state === 'suspended') {
+                this.debugLogger.warn('AudioContext', 'Context suspended, attempting to resume');
+                try {
+                    await this.audioContext.resume();
+                    this.debugLogger.info('AudioContext', 'Context resumed successfully');
+                } catch (err) {
+                    this.debugLogger.warn('AudioContext', 'Failed to resume context - browser may require gesture', err);
+                    // Ignore; browser may require a gesture and will surface on play()
+                }
+            }
+
             await this.mediaElement.play();
+            this.debugLogger.debug('Playback', 'Play operation completed');
+
         } catch (err: unknown) {
             const name = (err as Error).name || 'PlaybackError';
+            const message = (err as Error).message || 'Unknown playback error';
+
+            this.debugLogger.error('Playback', 'Play operation failed', {
+                name,
+                message,
+                error: err,
+                contextState: this.audioContext?.state,
+                hasTrack: this.hasMainTrack(),
+            });
+
             if (name === 'NotAllowedError') {
                 throw new Error('Playback blocked by browser. Please interact to start audio.');
             }
             throw err;
+        } finally {
+            endTimer();
         }
     }
 
     pause(): void {
-        if (!this.mediaElement) return;
+        this.debugLogger.debug('Playback', 'Pause requested');
+        if (!this.mediaElement) {
+            this.debugLogger.warn('Playback', 'Cannot pause - no media element');
+            return;
+        }
         this.mediaElement.pause();
+        this.debugLogger.debug('Playback', 'Pause completed');
     }
 
     stop(): void {
-        if (!this.mediaElement) return;
+        this.debugLogger.debug('Playback', 'Stop requested');
+        if (!this.mediaElement) {
+            this.debugLogger.warn('Playback', 'Cannot stop - no media element');
+            return;
+        }
         this.mediaElement.pause();
         this.mediaElement.currentTime = 0;
+        this.debugLogger.debug('Playback', 'Stop completed', {
+            currentTime: this.mediaElement.currentTime,
+        });
     }
 
     setMasterVolume(volume01: number): void {
+        const originalVolume = this.volumeNormalized;
+        this.debugLogger.debug('Volume', 'Setting master volume', {
+            requested: volume01,
+            current: originalVolume,
+        });
+
         this.ensureContext();
-        if (!this.masterGainNode) return;
+        if (!this.masterGainNode) {
+            this.debugLogger.warn('Volume', 'Cannot set volume - no master gain node');
+            return;
+        }
+
         this.volumeNormalized = Math.max(0, Math.min(1, volume01));
+
         try {
             localStorage.setItem('audio.masterVolume', String(this.volumeNormalized));
-        } catch {
-            /* ignore */
+            this.debugLogger.debug('Volume', 'Persisted volume to localStorage', {
+                volume: this.volumeNormalized
+            });
+        } catch (err) {
+            this.debugLogger.warn('Volume', 'Failed to persist volume to localStorage', err);
         }
+
         const target = this.muted ? 0 : this.perceptual(this.volumeNormalized);
+        this.debugLogger.debug('Volume', 'Calculated gain target', {
+            volumeNormalized: this.volumeNormalized,
+            perceptualGain: this.perceptual(this.volumeNormalized),
+            actualTarget: target,
+            muted: this.muted,
+        });
+
         this.rampGain(target, 60);
         this.dispatch('volumechange', { volume: this.volumeNormalized, muted: this.muted });
+
+        this.debugLogger.info('Volume', 'Master volume updated', {
+            from: originalVolume,
+            to: this.volumeNormalized,
+            gainTarget: target,
+        });
     }
 
     getMasterVolume(): number {
@@ -239,25 +469,61 @@ class AudioEngineImpl {
     }
 
     mute(): void {
+        this.debugLogger.debug('Volume', 'Muting audio');
         this.muted = true;
         this.rampGain(0, 60);
         this.dispatch('volumechange', { volume: this.volumeNormalized, muted: this.muted });
+        this.debugLogger.debug('Volume', 'Audio muted', { volume: this.volumeNormalized });
     }
+
     unmute(): void {
+        this.debugLogger.debug('Volume', 'Unmuting audio');
         this.muted = false;
-        this.rampGain(this.perceptual(this.volumeNormalized), 60);
+        const target = this.perceptual(this.volumeNormalized);
+        this.rampGain(target, 60);
         this.dispatch('volumechange', { volume: this.volumeNormalized, muted: this.muted });
+        this.debugLogger.debug('Volume', 'Audio unmuted', {
+            volume: this.volumeNormalized,
+            gainTarget: target,
+        });
     }
 
     setPlaybackRate(rate: number): void {
-        if (!this.mediaElement) return;
-        this.mediaElement.playbackRate = Math.max(0.25, Math.min(4, rate));
+        const clampedRate = Math.max(0.25, Math.min(4, rate));
+        this.debugLogger.debug('Playback', 'Setting playback rate', {
+            requested: rate,
+            clamped: clampedRate,
+        });
+
+        if (!this.mediaElement) {
+            this.debugLogger.warn('Playback', 'Cannot set playback rate - no media element');
+            return;
+        }
+
+        this.mediaElement.playbackRate = clampedRate;
+        this.debugLogger.debug('Playback', 'Playback rate set', { rate: clampedRate });
     }
 
     seek(seconds: number): void {
-        if (!this.mediaElement) return;
-        const t = Math.max(0, Math.min(this.mediaElement.duration || Infinity, seconds));
+        this.debugLogger.debug('Playback', 'Seeking to position', {
+            requested: seconds,
+            currentTime: this.mediaElement?.currentTime ?? 0,
+        });
+
+        if (!this.mediaElement) {
+            this.debugLogger.warn('Playback', 'Cannot seek - no media element');
+            return;
+        }
+
+        const duration = this.mediaElement.duration || Infinity;
+        const t = Math.max(0, Math.min(duration, seconds));
         this.mediaElement.currentTime = t;
+
+        this.debugLogger.debug('Playback', 'Seek completed', {
+            targetTime: t,
+            duration,
+            actualTime: this.mediaElement.currentTime,
+        });
     }
 
     getCurrentTime(): number {
@@ -304,6 +570,13 @@ class AudioEngineImpl {
     private dispatch<K extends keyof AudioEventMap>(type: K, detail: AudioEventMap[K]['detail']): void {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const evt = new CustomEvent(type as any, { detail }) as AudioEventMap[K];
+
+        if (type === 'error' || type === 'ended') {
+            this.debugLogger.info('Events', `Dispatching ${type} event`, detail);
+        } else {
+            this.debugLogger.debug('Events', `Dispatching ${type} event`, detail);
+        }
+
         this.eventTarget.dispatchEvent(evt);
     }
 
@@ -330,24 +603,93 @@ class AudioEngineImpl {
                 return `Audio error (${err.code})`;
         }
     }
+
+    /**
+     * Cleanup method for development debugging
+     */
+    destroy(): void {
+        this.debugLogger.info('Engine', 'Destroying audio engine');
+
+        if (this.mediaElement) {
+            this.debugLogger.debug('Engine', 'Cleaning up media element');
+            this.mediaElement.pause();
+            this.mediaElement.src = '';
+            this.mediaElement.load();
+        }
+
+        if (this.audioContext && this.audioContext.state !== 'closed') {
+            this.debugLogger.debug('Engine', 'Closing audio context');
+            this.audioContext.close().catch(err => {
+                this.debugLogger.warn('Engine', 'Failed to close audio context', err);
+            });
+        }
+
+        this.debugLogger.info('Engine', 'Audio engine destroyed');
+    }
+
+    /**
+     * Debug method to get current engine state
+     */
+    getDebugState(): Record<string, unknown> {
+        return {
+            hasAudioContext: !!this.audioContext,
+            audioContextState: this.audioContext?.state,
+            hasMediaElement: !!this.mediaElement,
+            hasGainNode: !!this.masterGainNode,
+            hasSourceNode: !!this.mediaSourceNode,
+            isPlaying: this.isPlaying,
+            volumeNormalized: this.volumeNormalized,
+            muted: this.muted,
+            loadToken: this.loadToken,
+            hasTrack: this.hasMainTrack(),
+            currentTime: this.getCurrentTime(),
+            duration: this.getDuration(),
+            bufferedPercent: this.getBufferedPercent(),
+        };
+    }
 }
 
 let singleton: AudioEngineImpl | null = null;
 
 export function getAudioEngine(): AudioEngineImpl {
-    if (!singleton) singleton = new AudioEngineImpl();
+    if (!singleton) {
+        const logger = getAudioDebugLogger();
+        logger.info('Engine', 'Creating new AudioEngine singleton');
+        singleton = new AudioEngineImpl();
+    }
     return singleton;
 }
 
 declare global {
     interface Window {
         __audioEngine?: ReturnType<typeof getAudioEngine>;
+        __audioDebugLogger?: ReturnType<typeof getAudioDebugLogger>;
     }
 }
 
 if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
     try {
         window.__audioEngine = getAudioEngine();
+        window.__audioDebugLogger = getAudioDebugLogger();
+
+        (window as unknown as Record<string, unknown>).__audioDebugHelpers = {
+            getEngineState: () => window.__audioEngine?.getDebugState(),
+            logAudioContext: () => {
+                const engine = window.__audioEngine as unknown as Record<string, unknown>;
+                if (engine?.audioContext) {
+                    window.__audioDebugLogger?.logAudioContextState(engine.audioContext as AudioContext);
+                }
+            },
+            logMediaElement: () => {
+                const engine = window.__audioEngine as unknown as Record<string, unknown>;
+                if (engine?.mediaElement) {
+                    window.__audioDebugLogger?.logMediaElementState(engine.mediaElement as HTMLAudioElement);
+                }
+            },
+            clearDebugLog: () => window.__audioDebugLogger?.clear(),
+            getDebugEvents: () => window.__audioDebugLogger?.getEvents(),
+        };
+
     } catch {
         /* ignore */
     }
